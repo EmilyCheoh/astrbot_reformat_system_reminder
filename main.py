@@ -87,9 +87,8 @@ class ReformatSystemReminderPlugin(Star):
     role=user 的消息）。
     """
 
-    def __init__(self, context: Context, config):
+    def __init__(self, context: Context):
         super().__init__(context)
-        self.config = config
         self.context = context
         logger.info("历史时间标签整理插件初始化完成")
 
