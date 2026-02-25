@@ -70,7 +70,7 @@ def _reformat_text(text: str) -> tuple[str, bool]:
 # ---------------------------------------------------------------------------
 
 @register(
-    "reformat_system_reminder",
+    "历史时间标签整理",
     "FelisAbyssalis",
     "历史时间标签整理 - 将历史轮次中的 <system_reminder> 重写为 <date_and_time>",
     "1.0.1",
