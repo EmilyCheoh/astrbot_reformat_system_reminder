@@ -1,5 +1,5 @@
 name: 历史时间标签整理
 description: 历史时间标签整理 - 将历史轮次中的 <system_reminder> 重写为 <date_and_time>
-version: 1.0.0
+version: 1.0.2
 author: Felis Abyssalis
 repo: "https://github.com/EmilyCheoh/astrbot_reformat_system_reminder"

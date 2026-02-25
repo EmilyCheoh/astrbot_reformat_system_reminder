@@ -1,13 +1,13 @@
 """
-历史时间标签整理 - 将历史轮次中的 <system_reminder> 重写为 <date_and_time>
+历史时间标签整理 - 将对话上下文中的 <system_reminder> 重写为 <date_and_time>
 
-在每一轮 LLM 请求前，扫描 req.contexts 中除最后一条用户消息以外的
-所有历史轮次，将形如：
+在每一轮 LLM 请求前，扫描 req.contexts 中所有消息，将形如：
     <system_reminder>Current datetime: 2026-02-25 01:24 (CST)</system_reminder>
 替换为：
     <date_and_time>2026-02-25 01:24 (CST)</date_and_time>
 
-当前轮次（最后一条 role=user 的消息）不做任何修改。
+不跳过任何消息。AstrBot 每次都会为当前用户消息重新附加新的
+<system_reminder>，因此替换 contexts 中的旧标签不会导致信息丢失。
 
 设计要点：
 - 正则匹配 <system_reminder> 标签对内的完整内容
@@ -73,7 +73,7 @@ def _reformat_text(text: str) -> tuple[str, bool]:
     "历史时间标签整理",
     "FelisAbyssalis",
     "历史时间标签整理 - 将历史轮次中的 <system_reminder> 重写为 <date_and_time>",
-    "1.0.1",
+    "1.0.2",
     "https://github.com/EmilyCheoh/astrbot_reformat_system_reminder",
 )
 class ReformatSystemReminderPlugin(Star):
@@ -93,22 +93,6 @@ class ReformatSystemReminderPlugin(Star):
         logger.info("历史时间标签整理插件初始化完成")
 
     # -------------------------------------------------------------------
-    # 核心：定位"最后一条用户消息"的索引
-    # -------------------------------------------------------------------
-
-    @staticmethod
-    def _find_last_user_index(contexts: list) -> int:
-        """
-        从后往前扫描 contexts，找到最后一条 role=user 的消息索引。
-        如果找不到，返回 -1。
-        """
-        for i in range(len(contexts) - 1, -1, -1):
-            msg = contexts[i]
-            if isinstance(msg, dict) and msg.get("role") == "user":
-                return i
-        return -1
-
-    # -------------------------------------------------------------------
     # 核心：对单条消息执行替换
     # -------------------------------------------------------------------
 
@@ -121,7 +105,7 @@ class ReformatSystemReminderPlugin(Star):
         1. 纯字符串
         2. 字典，content 为字符串
         3. 字典，content 为列表（多模态，每个元素可能是
-           {"type": "text", "text": "..."}）
+           {"type": "text", "text": "..."})
 
         Returns:
             (处理后的消息, 替换次数)
@@ -189,28 +173,24 @@ class ReformatSystemReminderPlugin(Star):
     ):
         """
         [事件钩子] 在 LLM 请求前：
-        扫描 req.contexts 中除最后一条用户消息以外的所有历史轮次，
-        将 <system_reminder> 替换为 <date_and_time>。
+        扫描 req.contexts 中所有消息，将 <system_reminder> 替换为
+        <date_and_time>。
+
+        不跳过任何消息（包括当前轮次），因为 AstrBot 每次都会为
+        当前用户消息重新附加一个新的 <system_reminder>，替换旧的
+        不会导致信息丢失。而跳过当前轮次会导致该消息被持久化后
+        在下一轮仍然保留原始的 <system_reminder> 格式。
         """
         if not hasattr(req, "contexts") or not req.contexts:
             return
 
         try:
             session_id = event.unified_msg_origin or "unknown"
-            contexts = req.contexts
-
-            # 定位最后一条用户消息——这条不动
-            last_user_idx = self._find_last_user_index(contexts)
 
             total_replaced = 0
             new_contexts = []
 
-            for i, msg in enumerate(contexts):
-                # 跳过当前轮次（最后一条用户消息）
-                if i == last_user_idx:
-                    new_contexts.append(msg)
-                    continue
-
+            for msg in req.contexts:
                 processed, count = self._reformat_message(msg)
                 total_replaced += count
                 new_contexts.append(processed)
