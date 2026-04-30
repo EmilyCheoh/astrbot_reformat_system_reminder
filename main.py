@@ -1,13 +1,15 @@
 """
-历史时间标签整理 - 将对话上下文中的 <system_reminder> 重写为 <date_and_time>
+时间标签整理 - 将 <system_reminder> 重写为 <date_and_time>
 
-在每一轮 LLM 请求前，扫描 req.contexts 中所有消息，将形如：
+在每一轮 LLM 请求前，扫描 req.contexts（历史轮次）和
+req.extra_user_content_parts（当前轮次）中的所有消息，将形如：
     <system_reminder>Current datetime: 2026-02-25 01:24 (CST)</system_reminder>
 替换为：
     <date_and_time>2026-02-25 01:24 (CST)</date_and_time>
 
-不跳过任何消息。AstrBot 每次都会为当前用户消息重新附加新的
-<system_reminder>，因此替换 contexts 中的旧标签不会导致信息丢失。
+AstrBot 通过 extra_user_content_parts 为当前用户消息注入 <system_reminder>，
+该字段在 on_llm_request 钩子中可以被修改，因此当前轮次和历史轮次
+的 <system_reminder> 都会在 LLM 收到请求之前被替换。
 
 设计要点：
 - 正则匹配 <system_reminder> 标签对内的完整内容
@@ -36,6 +38,12 @@ SYSTEM_REMINDER_PATTERN = re.compile(
     flags=re.DOTALL,
 )
 
+# 匹配上一轮插件写入的 <current_date_and_time>，用于历史降级
+CURRENT_TAG_PATTERN = re.compile(
+    r"<current_date_and_time>(.*?)</current_date_and_time>",
+    flags=re.DOTALL,
+)
+
 # 用于从标签内容中提取时间部分的前缀
 DATETIME_PREFIX = "Current datetime: "
 
@@ -44,23 +52,33 @@ DATETIME_PREFIX = "Current datetime: "
 # 工具函数
 # ---------------------------------------------------------------------------
 
-def _reformat_match(m: re.Match) -> str:
+def _make_reformat_callback(tag: str):
     """
-    正则替换回调：将 <system_reminder> 标签替换为 <date_and_time>。
-    如果标签内容以 "Current datetime: " 开头，则去掉该前缀，
-    只保留时间字符串本身。
+    创建正则替换回调，将 <system_reminder> 替换为指定的标签。
     """
-    inner = m.group(1).strip()
-    if inner.startswith(DATETIME_PREFIX):
-        inner = inner[len(DATETIME_PREFIX):]
-    return f"<date_and_time>{inner}</date_and_time>"
+    def _callback(m: re.Match) -> str:
+        inner = m.group(1).strip()
+        if inner.startswith(DATETIME_PREFIX):
+            inner = inner[len(DATETIME_PREFIX):]
+        return f"<{tag}>{inner}</{tag}>"
+    return _callback
 
 
-def _reformat_text(text: str) -> tuple[str, bool]:
+def _reformat_text(text: str, tag: str = "date_and_time") -> tuple[str, bool]:
     """
     对一段文本执行替换。返回 (处理后文本, 是否发生了替换)。
+
+    当 tag 为 "date_and_time"（历史轮次）时，同时将残留的
+    <current_date_and_time> 降级为 <date_and_time>。
     """
-    result = SYSTEM_REMINDER_PATTERN.sub(_reformat_match, text)
+    callback = _make_reformat_callback(tag)
+    result = SYSTEM_REMINDER_PATTERN.sub(callback, text)
+    # 历史轮次：将上一轮写入的 <current_date_and_time> 降级
+    if tag == "date_and_time":
+        result = CURRENT_TAG_PATTERN.sub(
+            lambda m: f"<date_and_time>{m.group(1).strip()}</date_and_time>",
+            result,
+        )
     changed = result != text
     return result, changed
 
@@ -70,27 +88,27 @@ def _reformat_text(text: str) -> tuple[str, bool]:
 # ---------------------------------------------------------------------------
 
 @register(
-    "历史时间标签整理",
+    "时间标签整理",
     "FelisAbyssalis",
-    "历史时间标签整理 - 将历史轮次中的 <system_reminder> 重写为 <date_and_time>",
-    "1.0.2",
+    "时间标签整理 - 将所有轮次中的 <system_reminder> 重写为 <date_and_time>",
+    "2.0.0",
     "https://github.com/EmilyCheoh/astrbot_reformat_system_reminder",
 )
 class ReformatSystemReminderPlugin(Star):
     """
-    AstrBot 插件：在每一轮 LLM 请求前，将历史对话中的
+    AstrBot 插件：在每一轮 LLM 请求前，将对话中的
     <system_reminder>Current datetime: ...</system_reminder>
     替换为
     <date_and_time>...</date_and_time>
 
-    只处理历史轮次，不触碰当前轮次（req.contexts 中最后一条
-    role=user 的消息）。
+    同时处理历史轮次（req.contexts）和当前轮次
+    （req.extra_user_content_parts）。
     """
 
     def __init__(self, context: Context):
         super().__init__(context)
         self.context = context
-        logger.info("历史时间标签整理插件初始化完成")
+        logger.info("时间标签整理插件初始化完成")
 
     # -------------------------------------------------------------------
     # 核心：对单条消息执行替换
@@ -164,6 +182,53 @@ class ReformatSystemReminderPlugin(Star):
         return msg, replaced
 
     # -------------------------------------------------------------------
+    # 工具：处理 extra_user_content_parts 中的单个元素
+    # -------------------------------------------------------------------
+
+    @staticmethod
+    def _reformat_content_part(part) -> tuple[object, int]:
+        """
+        对一个 ContentPart 或 dict 执行替换。
+
+        extra_user_content_parts 中的元素可能是：
+        - dict: {"type": "text", "text": "..."}
+        - ContentPart 对象（带 .type 和 .text 属性）
+        - 纯字符串（理论上）
+
+        Returns:
+            (处理后的元素, 替换次数)
+        """
+        tag = "current_date_and_time"
+
+        # 纯字符串
+        if isinstance(part, str):
+            new_text, changed = _reformat_text(part, tag)
+            return (new_text, 1) if changed else (part, 0)
+
+        # dict 格式
+        if isinstance(part, dict):
+            if part.get("type") == "text" and isinstance(
+                part.get("text"), str
+            ):
+                new_text, changed = _reformat_text(part["text"], tag)
+                if changed:
+                    part_copy = part.copy()
+                    part_copy["text"] = new_text
+                    return part_copy, 1
+            return part, 0
+
+        # ContentPart 对象（带属性）
+        if hasattr(part, "type") and hasattr(part, "text"):
+            if part.type == "text" and isinstance(part.text, str):
+                new_text, changed = _reformat_text(part.text, tag)
+                if changed:
+                    part.text = new_text
+                    return part, 1
+            return part, 0
+
+        return part, 0
+
+    # -------------------------------------------------------------------
     # 事件钩子
     # -------------------------------------------------------------------
 
@@ -173,40 +238,41 @@ class ReformatSystemReminderPlugin(Star):
     ):
         """
         [事件钩子] 在 LLM 请求前：
-        扫描 req.contexts 中所有消息，将 <system_reminder> 替换为
-        <date_and_time>。
-
-        不跳过任何消息（包括当前轮次），因为 AstrBot 每次都会为
-        当前用户消息重新附加一个新的 <system_reminder>，替换旧的
-        不会导致信息丢失。而跳过当前轮次会导致该消息被持久化后
-        在下一轮仍然保留原始的 <system_reminder> 格式。
+        1. 扫描 req.contexts（历史轮次），替换 <system_reminder>
+        2. 扫描 req.extra_user_content_parts（当前轮次），替换 <system_reminder>
         """
-        if not hasattr(req, "contexts") or not req.contexts:
-            return
-
         try:
             session_id = event.unified_msg_origin or "unknown"
-
             total_replaced = 0
-            new_contexts = []
 
-            for msg in req.contexts:
-                processed, count = self._reformat_message(msg)
-                total_replaced += count
-                new_contexts.append(processed)
+            # --- 历史轮次：req.contexts ---
+            if hasattr(req, "contexts") and req.contexts:
+                new_contexts = []
+                for msg in req.contexts:
+                    processed, count = self._reformat_message(msg)
+                    total_replaced += count
+                    new_contexts.append(processed)
+                req.contexts = new_contexts
 
-            req.contexts = new_contexts
+            # --- 当前轮次：req.extra_user_content_parts ---
+            if hasattr(req, "extra_user_content_parts") and req.extra_user_content_parts:
+                new_parts = []
+                for part in req.extra_user_content_parts:
+                    processed, count = self._reformat_content_part(part)
+                    total_replaced += count
+                    new_parts.append(processed)
+                req.extra_user_content_parts = new_parts
 
             if total_replaced > 0:
                 logger.info(
-                    f"[{session_id}] 历史时间标签整理: "
+                    f"[{session_id}] 时间标签整理: "
                     f"已将 {total_replaced} 处 <system_reminder> "
                     f"替换为 <date_and_time>"
                 )
 
         except Exception as e:
             logger.error(
-                f"历史时间标签整理: 处理时发生错误: {e}",
+                f"时间标签整理: 处理时发生错误: {e}",
                 exc_info=True,
             )
 
@@ -216,4 +282,4 @@ class ReformatSystemReminderPlugin(Star):
 
     async def terminate(self):
         """插件停止时的清理。"""
-        logger.info("历史时间标签整理插件已停止")
+        logger.info("时间标签整理插件已停止")

@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## 2.0.0 — 2026-04-30
+
+### 新增
+
+- 处理当前轮次：扫描 `req.extra_user_content_parts`，将当前轮的 `<system_reminder>` 替换为 `<current_date_and_time>`
+- 双标签区分时序：历史轮次 → `<date_and_time>`，当前轮次 → `<current_date_and_time>`
+- 支持 `ContentPart` 对象格式（带 `.type` 和 `.text` 属性）
+- 安全降级：历史轮次中残留的 `<current_date_and_time>` 会自动降级为 `<date_and_time>`
+
 ## 1.0.2 — 2026-02-25
 
 ### 修复
