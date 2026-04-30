@@ -1,4 +1,5 @@
 name: 时间标签整理
+display_name: 时间标签整理
 description: 时间标签整理 - 将所有轮次中的 <system_reminder> 重写为 <date_and_time> / <current_date_and_time>
 version: 2.0.0
 author: Felis Abyssalis

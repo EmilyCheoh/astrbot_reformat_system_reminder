@@ -108,7 +108,7 @@ class ReformatSystemReminderPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
         self.context = context
-        logger.info("时间标签整理插件初始化完成")
+        logger.info("⌛️时间标签整理插件初始化完成")
 
     # -------------------------------------------------------------------
     # 核心：对单条消息执行替换
@@ -262,13 +262,6 @@ class ReformatSystemReminderPlugin(Star):
                     total_replaced += count
                     new_parts.append(processed)
                 req.extra_user_content_parts = new_parts
-
-            if total_replaced > 0:
-                logger.info(
-                    f"[{session_id}] 时间标签整理: "
-                    f"已将 {total_replaced} 处 <system_reminder> "
-                    f"替换为 <date_and_time>"
-                )
 
         except Exception as e:
             logger.error(
