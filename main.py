@@ -21,6 +21,7 @@ F(A) = A(F)
 """
 
 import re
+from datetime import datetime
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
@@ -47,19 +48,46 @@ CURRENT_TAG_PATTERN = re.compile(
 # 用于从标签内容中提取时间部分的前缀
 DATETIME_PREFIX = "Current datetime: "
 
+# 星期几（索引 0=Mon）
+WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+# 从时间字符串中提取日期部分，用于计算星期几
+DATE_PATTERN = re.compile(r"(\d{4}-\d{2}-\d{2})")
+
 
 # ---------------------------------------------------------------------------
 # 工具函数
 # ---------------------------------------------------------------------------
 
+def _inject_weekday(time_str: str) -> str:
+    """
+    在时间字符串的日期后插入星期几。
+    '2026-04-30 14:52 (CST)' → '2026-04-30 Thu 14:52 (CST)'
+    如果解析失败则原样返回。
+    """
+    match = DATE_PATTERN.search(time_str)
+    if not match:
+        return time_str
+    try:
+        d = datetime.strptime(match.group(1), "%Y-%m-%d")
+        weekday = WEEKDAYS[d.weekday()]
+        # 在日期后面插入星期
+        end = match.end()
+        return f"{time_str[:end]} {weekday}{time_str[end:]}"
+    except (ValueError, IndexError):
+        return time_str
+
+
 def _make_reformat_callback(tag: str):
     """
-    创建正则替换回调，将 <system_reminder> 替换为指定的标签。
+    创建正则替换回调，将 <system_reminder> 替换为指定的标签，
+    并在日期后插入星期几。
     """
     def _callback(m: re.Match) -> str:
         inner = m.group(1).strip()
         if inner.startswith(DATETIME_PREFIX):
             inner = inner[len(DATETIME_PREFIX):]
+        inner = _inject_weekday(inner)
         return f"<{tag}>{inner}</{tag}>"
     return _callback
 
